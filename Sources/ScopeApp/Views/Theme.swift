@@ -15,7 +15,6 @@ enum Theme {
     static let screen = Color(red: 0.03, green: 0.037, blue: 0.05)
     static let grid = Color.white.opacity(0.10)
     static let gridStrong = Color.white.opacity(0.22)
-    static let panel = Color(nsColor: .controlBackgroundColor)
     static let decoderPalette = [Color(red: 0.62, green: 0.48, blue: 1.0), Color(red: 0.35, green: 0.9, blue: 0.55),
                                  Color(red: 1.0, green: 0.45, blue: 0.65), Color(red: 1.0, green: 0.65, blue: 0.3)]
 

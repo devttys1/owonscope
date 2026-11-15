@@ -1,3 +1,4 @@
+#if os(macOS)
 import AppKit
 import ScopeKit
 import ScreenCaptureKit
@@ -165,12 +166,11 @@ final class Automation {
             let s = SimulatorScenario.allCases.first { "\($0)".lowercased() == arg.lowercased() } ?? .reference
             model.source = .demo(s)
         case "hardware": model.source = .hardware
+        case "share":
+            if arg == "off" { model.stopSharing() } else { model.startSharing() }
+            print("sharing \(model.sharing != nil ? "on, port \(model.sharing?.port ?? 0)" : "off")")
         case "add":
-            switch arg {
-            case "i2c": model.addDecoder(.i2c(I2CConfig()))
-            case "spi": model.addDecoder(.spi(SPIConfig()))
-            default: model.addDecoder(.uart(UARTConfig()))
-            }
+            model.addDecoder(DecoderKind.defaults(for: arg) ?? .uart(UARTConfig()))
         case "clear-decoders": model.decoders = []
         case "tab": model.display.bottomTab = BottomTab.allCases.first { $0.rawValue.lowercased() == arg } ?? .decode
         case "timebase":
@@ -297,3 +297,4 @@ final class Automation {
         }
     }
 }
+#endif

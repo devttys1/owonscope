@@ -1,3 +1,4 @@
+#if os(macOS)
 import AppKit
 import QuartzCore
 import CoreText
@@ -106,3 +107,4 @@ final class GIFRecorder {
         return frames.count
     }
 }
+#endif

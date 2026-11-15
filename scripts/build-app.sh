@@ -17,8 +17,8 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-swift build -c release --product OwonScope
-BIN="$(swift build -c release --show-bin-path)/OwonScope"
+swift build -c release --product OwonScopeMac
+BIN="$(swift build -c release --show-bin-path)/OwonScopeMac"
 
 APP=build/OwonScope.app
 rm -rf "$APP"
@@ -61,6 +61,8 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>LSApplicationCategoryType</key><string>public.app-category.developer-tools</string>
   <key>NSHighResolutionCapable</key><true/>
   <key>NSPrincipalClass</key><string>NSApplication</string>
+  <key>NSBonjourServices</key><array><string>_owonscope._tcp</string></array>
+  <key>NSLocalNetworkUsageDescription</key><string>OwonScope shares the oscilloscope with OwonScope on your iPhone or iPad over the local network.</string>
 </dict>
 </plist>
 PLIST

@@ -1,3 +1,4 @@
+#if os(macOS)
 import AppKit
 import ScopeKit
 import SwiftUI
@@ -19,17 +20,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
 }
 
-@main
-struct OwonScopeApp: App {
+/// The macOS app. Started by the OwonScope executable's main.swift.
+public struct OwonScopeMacApp: App {
+    /// The MCP server starts with the app unless it was switched off in the Acquire menu.
+    /// OWONSCOPE_MCP_PORT changes the port (default 8908).
+    private func startMCP() {
+        guard mcp == nil else { return }
+        let port = ProcessInfo.processInfo.environment["OWONSCOPE_MCP_PORT"].flatMap(UInt16.init) ?? ScopeMCPTools.defaultPort
+        let server = MCPServer(name: "owonscope", title: "OwonScope", version: Self.version, port: port,
+                               provider: ScopeMCPTools(model: model))
+        mcp = server
+        if UserDefaults.standard.object(forKey: "mcp.enabled") as? Bool ?? true { server.start() }
+    }
+
+    private static var version: String { Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "dev" }
+
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
     @State private var model = ScopeModel()
+    @State private var mcp: MCPServer?
 
-    var body: some Scene {
+    public init() {}
+
+    public var body: some Scene {
         WindowGroup("OwonScope") {
             ContentView(model: model)
                 .frame(minWidth: 980, minHeight: 640)
                 .preferredColorScheme(.dark)
-                .onAppear { Automation.installIfEnabled(model: model) }
+                .onAppear {
+                    Automation.installIfEnabled(model: model)
+                    startMCP()
+                }
         }
         .defaultSize(width: 1400, height: 900)
         .commands {
@@ -47,6 +67,20 @@ struct OwonScopeApp: App {
                     .keyboardShortcut("]", modifiers: .command)
                 Button("Slower Timebase") { model.stepTimebase(1) }
                     .keyboardShortcut("[", modifiers: .command)
+                Divider()
+                Toggle("Share on Network", isOn: Binding(get: { model.sharing != nil },
+                                                         set: { $0 ? model.startSharing() : model.stopSharing() }))
+                    .disabled(model.source.isRemote)
+                if let mcp {
+                    Toggle("MCP Server for AI Agents", isOn: Binding(get: { mcp.running }, set: { on in
+                        UserDefaults.standard.set(on, forKey: "mcp.enabled")
+                        on ? mcp.start() : mcp.stop()
+                    }))
+                    Button("Copy MCP Server Setup Command") {
+                        Clipboard.copy("claude mcp add --transport http owonscope \(mcp.url)")
+                    }
+                    .disabled(!mcp.running)
+                }
                 Divider()
                 Button("Reconnect") { model.reconnect() }
                 Button("Install FPGA Firmware…") { model.chooseFirmwareFolder() }
@@ -82,3 +116,4 @@ struct OwonScopeApp: App {
         }
     }
 }
+#endif

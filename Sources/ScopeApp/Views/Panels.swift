@@ -4,18 +4,26 @@ import SwiftUI
 struct MeasurementsBar: View {
     @Bindable var model: ScopeModel
 
+    private var rows: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            ForEach(Trace.allCases, id: \.self) { trace in
+                if model.isVisible(trace) { row(trace) }
+            }
+            if model.settings.channels[0].enabled && model.settings.channels[1].enabled,
+               model.display.measurements.contains(where: { $0.group == .cross }) {
+                crossRow
+            }
+        }
+    }
+
     var body: some View {
         HStack(alignment: .top, spacing: 14) {
-            VStack(alignment: .leading, spacing: 6) {
-                ForEach(Trace.allCases, id: \.self) { trace in
-                    if model.isVisible(trace) { row(trace) }
-                }
-                if model.settings.channels[0].enabled && model.settings.channels[1].enabled,
-                   model.display.measurements.contains(where: { $0.group == .cross }) {
-                    crossRow
-                }
+            if Platform.isTouch {
+                ScrollView(.horizontal, showsIndicators: false) { rows }
+            } else {
+                rows
+                Spacer(minLength: 0)
             }
-            Spacer(minLength: 0)
             Menu {
                 ForEach(MeasurementKind.Group.allCases, id: \.self) { group in
                     Section(group.rawValue) {
@@ -33,8 +41,9 @@ struct MeasurementsBar: View {
                 Button("Reset to Defaults") { model.display.measurements = MeasurementKind.defaults }
             } label: {
                 Image(systemName: "ruler")
+                    .frame(minWidth: Platform.isTouch ? 36 : nil, minHeight: Platform.isTouch ? 36 : nil)
             }
-            .menuStyle(.borderlessButton)
+            .borderlessMenu()
             .fixedSize()
             .help("Choose measurements")
         }
@@ -133,7 +142,57 @@ struct MeasureTable: View {
         return out
     }
 
+    #if os(iOS)
+    @Environment(\.horizontalSizeClass) private var sizeClass
+    #endif
+
     var body: some View {
+        #if os(iOS)
+        if sizeClass == .compact { compactList } else { table }
+        #else
+        table
+        #endif
+    }
+
+    /// Phone layout: a card per measurement (a Table shows only its first column there).
+    private var compactList: some View {
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 6) {
+                if rows.isEmpty {
+                    Text("No statistics yet.").foregroundStyle(.secondary).padding()
+                }
+                ForEach(rows) { r in
+                    VStack(alignment: .leading, spacing: 3) {
+                        HStack {
+                            Text(r.source).foregroundStyle(r.color).font(.system(size: 13, weight: .bold))
+                            Text(r.kind.rawValue).font(.system(size: 13, weight: .medium))
+                            Spacer()
+                            mono(r.kind.format(r.stat.last, unit: r.unit)).foregroundStyle(r.color)
+                        }
+                        HStack(spacing: 10) {
+                            stat("mean", r.kind.format(r.stat.mean, unit: r.unit))
+                            stat("min", r.kind.format(r.stat.min, unit: r.unit))
+                            stat("max", r.kind.format(r.stat.max, unit: r.unit))
+                            stat("σ", r.kind.group == .count ? String(format: "%.2f", r.stat.std) : r.kind.format(r.stat.std, unit: r.unit))
+                            stat("n", "\(r.stat.count)")
+                        }
+                    }
+                    .padding(8)
+                    .background(RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(0.05)))
+                }
+            }
+            .padding(8)
+        }
+    }
+
+    private func stat(_ k: String, _ v: String) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text(k).font(.system(size: 9)).foregroundStyle(.secondary)
+            Text(v).font(.system(size: 11, design: .monospaced)).lineLimit(1).minimumScaleFactor(0.7)
+        }
+    }
+
+    private var table: some View {
         Table(rows) {
             TableColumn("Source") { r in Text(r.source).foregroundStyle(r.color).font(.system(size: 11, weight: .semibold)) }
                 .width(min: 60, ideal: 70)
@@ -162,11 +221,13 @@ struct BottomPanel: View {
                 }
                 .pickerStyle(.segmented)
                 .labelsHidden()
-                .frame(width: 340)
-                Spacer()
+                .frame(maxWidth: 340)
+                Spacer(minLength: 4)
                 switch model.display.bottomTab {
                 case .decode:
                     Button("Copy", systemImage: "doc.on.doc", action: model.copyDecodedText)
+                        .labelStyle(.iconOnly)
+                        .frame(minWidth: Platform.isTouch ? 36 : nil, minHeight: Platform.isTouch ? 36 : nil)
                         .disabled(model.decoders.isEmpty)
                 case .spectrum:
                     Picker("", selection: $model.display.spectrumChannel) { Text("CH1").tag(0); Text("CH2").tag(1) }
@@ -174,7 +235,7 @@ struct BottomPanel: View {
                     Picker("", selection: $model.display.spectrumWindow) {
                         ForEach(FFTWindow.allCases, id: \.self) { Text($0.rawValue).tag($0) }
                     }.labelsHidden().frame(width: 110)
-                    Toggle("Log f", isOn: $model.display.spectrumLogFrequency).toggleStyle(.checkbox)
+                    Toggle("Log f", isOn: $model.display.spectrumLogFrequency).checkboxToggle()
                 case .measure:
                     Text("Statistics since the last settings change").font(.system(size: 11)).foregroundStyle(.secondary)
                     Button("Reset", systemImage: "arrow.counterclockwise", action: model.resetStatistics)
@@ -220,10 +281,19 @@ struct DecodeTable: View {
         return out.sorted { $0.time < $1.time }
     }
 
+    #if os(iOS)
+    @Environment(\.horizontalSizeClass) private var sizeClass
+    private var compact: Bool { sizeClass == .compact }
+    #else
+    private let compact = false
+    #endif
+
     var body: some View {
         if model.decoders.isEmpty {
             ContentUnavailableView("No decoders", systemImage: "waveform.path.badge.plus",
-                                   description: Text("Add UART, I²C or SPI in the inspector."))
+                                   description: Text(Platform.isTouch ? "Add UART, I²C, SPI, CAN, LIN, USB or 1-Wire under Decode." : "Add UART, I²C, SPI, CAN, LIN, USB or 1-Wire in the inspector."))
+        } else if compact {
+            compactList
         } else {
             HStack(spacing: 0) {
                 Table(rows) {
@@ -250,6 +320,36 @@ struct DecodeTable: View {
                     .background(Color.black.opacity(0.25))
                 }
             }
+        }
+    }
+
+    /// Phone layout: the UART terminal on top, then one row per event.
+    private var compactList: some View {
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 0) {
+                if let text = uartText, !text.isEmpty {
+                    Text(text)
+                        .font(.system(size: 13, design: .monospaced))
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(10)
+                        .background(Color.black.opacity(0.3), in: RoundedRectangle(cornerRadius: 8))
+                        .padding(.bottom, 8)
+                }
+                ForEach(rows) { r in
+                    HStack(spacing: 8) {
+                        Text(Format.seconds(r.time)).font(.system(size: 11, design: .monospaced)).foregroundStyle(.secondary)
+                            .frame(width: 76, alignment: .leading)
+                        Text(r.decoder).foregroundStyle(r.color).font(.system(size: 11, weight: .semibold)).frame(width: 40, alignment: .leading)
+                        Text(r.kind).font(.system(size: 11)).foregroundStyle(.secondary).frame(width: 44, alignment: .leading)
+                        Text(r.label).font(.system(size: 13, design: .monospaced))
+                        Spacer(minLength: 0)
+                    }
+                    .padding(.vertical, 4)
+                    Divider()
+                }
+            }
+            .padding(8)
         }
     }
 

@@ -11,7 +11,7 @@ OwonScope talks to the scope directly over USB through libusb. You don't need Ja
 - **Fast, smooth display.** Antialiased traces drawn with Metal at up to 55 fps, with optional phosphor-style persistence.
 - **20 ns/div to 100 s/div.** Timebases faster than 5 µs/div are rebuilt from the 100 MS/s samples with windowed sin(x)/x interpolation. Timebases of 500 ms/div and slower use roll mode.
 - **Exact trigger alignment.** The edge is found to sub-sample precision, which removes the hardware's sample-rate-dependent trigger offset and jitter. Edge and pulse-width triggers, with holdoff.
-- **Protocol decoding:** UART, I²C and SPI, shown as bus lanes on the screen, a table and an ASCII terminal.
+- **Protocol decoding:** UART, I²C, SPI, CAN, LIN, USB 1.x and 1-Wire, shown as bus lanes on the screen, a table and an ASCII terminal.
 - **Acquisition modes:** Normal, Peak detect, Average (2–1024 captures) and Envelope, alongside persistence.
 - **Math channel** with derived units, and **current probe** support.
 - **Cursors:** time, amplitude, both, or track.
@@ -29,6 +29,10 @@ OwonScope talks to the scope directly over USB through libusb. You don't need Ja
 | **UART** | auto baud, 5–9 data bits, parity, inverted (RS-232) input, ASCII terminal |
 | **I²C** | address and R/W, data, ACK/NACK, start, repeated start and stop |
 | **SPI** | modes 0–3, 8 or 16-bit words, MSB or LSB first. With two channels there's no chip-select, so frames are split on idle gaps. |
+| **CAN** | CAN 2.0A/B on CAN_H, CAN_L or a transceiver's RX/TX: auto bit rate and polarity, de-stuffing, standard and extended IDs, remote frames, DLC, CRC-15 check, ACK, stuff and form errors. CAN FD frames are flagged, not decoded. |
+| **LIN** | break, sync (baud measured from it), protected ID with parity check, response bytes, classic or enhanced checksum, headers with no response |
+| **USB** | low and full speed on D+ and D− (speed detected from the idle state): NRZI and bit-stuffing removed, SYNC, PID, token address and endpoint, SOF frame number, data, CRC5/CRC16, handshakes, EOP, keep-alive and bus reset. Full speed needs the 100 MS/s timebases. |
+| **1-Wire** | standard and overdrive speed: reset and presence, ROM commands, 64-bit ROM codes with their CRC-8, function commands (named for the DS18B20) and scratchpad CRC |
 
 Decoded events are shown as lanes over the waveform and in a table you can copy.
 
@@ -78,6 +82,31 @@ Measure over the whole record, the visible screen, or between the time cursors. 
 
 **Copy Report** (⌘⇧C) puts it on the clipboard as vector art for Pages, Keynote or Word. The report above was exported straight from the app.
 
+### MCP server for AI agents
+
+The Mac app serves the [Model Context Protocol](https://modelcontextprotocol.io) at `http://127.0.0.1:8908/mcp`, so an AI agent can set up the scope, take captures and read the results. It listens on loopback only and uses Streamable HTTP with JSON responses. Set `OWONSCOPE_MCP_PORT` to use another port. Switch it on or off, or copy the setup command, from **Acquire ▸ MCP Server for AI Agents**. For Claude Code:
+
+```sh
+claude mcp add --transport http owonscope http://127.0.0.1:8908/mcp
+```
+
+The agent drives the app's own settings, so you see everything it does on screen.
+
+| Tool | What it does |
+|---|---|
+| `scope_status` | connection, run state, channel/timebase/trigger/acquisition/math/decoder settings, latest capture |
+| `configure_channel`, `configure_timebase`, `configure_trigger`, `configure_acquisition`, `configure_math` | set up the scope. Values are in probe-tip units and snap to the hardware ranges |
+| `run_control` | run, stop, single, force trigger, autoset |
+| `capture` | one capture taken after the call with the current settings, with every measurement per trace (or the one-shot capture once it triggers). Warns about clipping and low resolution, and can return a picture of the screen |
+| `measure` | mean, min, max and standard deviation of measurements over N fresh captures, gated to a time window if needed |
+| `get_waveform` | samples between two times, decimated (min/max, mean or every n-th) or interpolated, with an optional full-resolution CSV |
+| `spectrum` | FFT peaks in dBV and RMS units |
+| `configure_decoder`, `get_decoded` | UART, I²C, SPI, CAN, LIN, USB 1.x and 1-Wire events, and UART text |
+| `export_report` | SVG, PDF or PNG report, optionally returned as an image |
+| `set_source` | USB scope or simulator |
+
+To catch a one-off event such as start-up or a load step, configure the trigger, call `run_control single`, cause the event, then call `capture`, which waits for the trigger. It works alongside other bench MCP servers, for example a programmable supply and electronic load, when testing or debugging boards.
+
 ## Requirements
 
 - macOS 14.4 or later. Apple Silicon or Intel.
@@ -93,10 +122,10 @@ cd owonscope
 scripts/build-app.sh               # builds build/OwonScope.app (bundles libusb, ad-hoc signed)
 open build/OwonScope.app
 scripts/build-app.sh --install     # or build and copy to /Applications
-swift run OwonScope                # or run straight from source
+swift run OwonScopeMac             # or run straight from source
 ```
 
-With no scope connected, choose a signal from the **Source** menu in the toolbar: a 1 kHz reference with UART, an I²C bus, SPI, or sine + AM.
+With no scope connected, choose a signal from the **Source** menu in the toolbar: a 1 kHz reference with UART, an I²C bus, SPI, CAN, LIN, USB low speed, 1-Wire (a DS18B20), or sine + AM.
 
 ## FPGA firmware
 
@@ -130,8 +159,11 @@ Sources/
   CLibUSB/      libusb system module (pkg-config)
   ScopeKit/     UI-free core: USB transport, VDS1022 protocol and calibration, FPGA loader,
                 settings → register map, acquisition engine, simulator, trigger refinement,
-                measurements, averaging and math, FFT, decoders, vector drawing (SVG / PDF)
-  OwonScope/    SwiftUI app: Metal trace renderer, overlays, inspector, panels, report export
+                measurements, averaging and math, FFT, decoders, vector drawing (SVG / PDF),
+                MCP server (loopback HTTP / JSON-RPC)
+  ScopeApp/     SwiftUI app: Metal trace renderer, overlays, inspector, panels, report export,
+                the scope's MCP tools
+  OwonScope/    the Mac executable that starts it
 ```
 
 Settings are declarative. `RegisterMap` turns a `ScopeSettings` value into the full list of register writes, and the hardware backend sends only the ones that changed.

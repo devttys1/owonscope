@@ -1,7 +1,8 @@
+#if canImport(CLibUSB)
 import CLibUSB
 import Foundation
 
-public struct USBError: Error, CustomStringConvertible {
+public struct USBError: TransportFailure, CustomStringConvertible {
     public let code: Int32
     public let context: String
 
@@ -18,7 +19,7 @@ public struct USBError: Error, CustomStringConvertible {
 
 /// Thin synchronous wrapper around a libusb device handle with one claimed
 /// interface and a pair of bulk endpoints. Not thread safe: confine to one thread.
-public final class USBDevice {
+public final class USBDevice: BulkTransport {
     private var context: OpaquePointer?
     private var handle: OpaquePointer?
     private let interface: Int32
@@ -138,3 +139,4 @@ public final class USBDevice {
         if rc < 0 { throw USBError(code: rc, context: context) }
     }
 }
+#endif

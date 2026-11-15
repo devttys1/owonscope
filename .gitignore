@@ -8,3 +8,4 @@ DerivedData/
 # OWON FPGA bitstreams are vendor binaries - never commit them
 Firmware/
 *.bin
+.bsp/

@@ -27,7 +27,12 @@ public final class ScopeEngine: @unchecked Sendable {
     public enum Source: Equatable, Sendable {
         case hardware
         case simulator(SimulatorScenario)
+        /// A scope shared over the network by `ScopeServer` on another computer.
+        case remote(RemoteTarget)
     }
+
+    /// How this device introduces itself to a remote scope's server.
+    nonisolated(unsafe) public static var clientName = ProcessInfo.processInfo.hostName
 
     public var onEvent: (@Sendable (EngineEvent) -> Void)?
 
@@ -39,6 +44,8 @@ public final class ScopeEngine: @unchecked Sendable {
     private var settings: ScopeSettings
     private var settingsDirty = true
     private var running = true
+    /// Acquisition held off without changing the run state (an iOS app in the background).
+    private var paused = false
     private var rearm = true
     private var forcePending = false
     private var autosetPending = false
@@ -101,6 +108,10 @@ public final class ScopeEngine: @unchecked Sendable {
         let g = generation
         cond.broadcast(); cond.unlock()
         return g
+    }
+
+    public func setPaused(_ p: Bool) {
+        cond.lock(); paused = p; cond.broadcast(); cond.unlock()
     }
 
     public func forceTrigger() { cond.lock(); forcePending = true; cond.broadcast(); cond.unlock() }
@@ -172,10 +183,33 @@ public final class ScopeEngine: @unchecked Sendable {
             backend = sim
             markAllDirty()
             emit(.connection(.connected(sim.info)))
+        case .remote(let target):
+            guard Date().timeIntervalSince(lastConnectAttempt) > 1 else { return }
+            lastConnectAttempt = Date()
+            if lastFailure == nil { emit(.connection(.connecting)) }
+            cond.lock(); let local = settings; cond.unlock()
+            do {
+                let r = try RemoteBackend(target: target, clientName: Self.clientName, localSettings: local) { [weak self] e in
+                    guard let self else { return }
+                    switch e {
+                    case .connection(let c): self.emit(.connection(c))
+                    case .settings(let s): self.adopt(s)
+                    case .log(let m): self.emit(.log(m))
+                    }
+                }
+                backend = r
+                lastFailure = nil
+                markAllDirty()
+            } catch {
+                let msg = (error as? LocalizedError)?.errorDescription ?? "\(error)"
+                if lastFailure != msg { emit(.connection(.failed(msg))); emit(.log(msg)) }
+                lastFailure = msg
+                lastConnectAttempt = Date().addingTimeInterval(2) // back off
+            }
         case .hardware:
             guard Date().timeIntervalSince(lastConnectAttempt) > 1 else { return }
             lastConnectAttempt = Date()
-            guard USBDevice.isPresent(vendorID: VDS1022.vendorID, productID: VDS1022.productID) else {
+            guard ScopeTransport.isPresent() else {
                 if lastFailure != "absent" { emit(.connection(.searching)); lastFailure = "absent" }
                 return
             }
@@ -196,6 +230,16 @@ public final class ScopeEngine: @unchecked Sendable {
         }
     }
 
+    /// Takes settings changed elsewhere (a remote scope's other clients) without sending
+    /// them back, and reports them like autoset's.
+    private func adopt(_ s: ScopeSettings) {
+        cond.lock()
+        let changed = s != settings
+        if changed { settings = s }
+        cond.unlock()
+        if changed { emit(.settings(s)) }
+    }
+
     private func markAllDirty() {
         cond.lock(); settingsDirty = true; forceResend = true; rearm = true; cond.unlock()
     }
@@ -208,14 +252,14 @@ public final class ScopeEngine: @unchecked Sendable {
         var s = settings
         let dirty = settingsDirty, force = forceResend, doRearm = rearm
         let doForce = forcePending, doAutoset = autosetPending
-        let isRunning = running
+        let isRunning = running && !paused
         let gen = generation
         settingsDirty = false; forceResend = false; rearm = false
         forcePending = false; autosetPending = false
         cond.unlock()
 
         if doAutoset {
-            s = try runAutoset(backend, from: s)
+            s = try backend.autoset(from: s) ?? runAutoset(backend, from: s)
             cond.lock()
             let current = generation == gen
             if current { settings = s; running = true }
@@ -259,7 +303,7 @@ public final class ScopeEngine: @unchecked Sendable {
     private func handle(_ error: Error) {
         let msg = (error as? LocalizedError)?.errorDescription ?? "\(error)"
         emit(.log("Engine error: \(msg)"))
-        if let usb = error as? USBError, !usb.isDisconnected, !usb.isTimeout {
+        if let t = error as? TransportFailure, !t.isDisconnected, !t.isTimeout {
             idleWait(0.05)
             return
         }

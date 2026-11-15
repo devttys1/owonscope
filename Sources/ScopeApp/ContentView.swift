@@ -1,3 +1,4 @@
+#if os(macOS)
 import AppKit
 import ScopeKit
 import SwiftUI
@@ -62,6 +63,13 @@ struct ContentView: View {
                 .disabled(model.acquisition == nil)
                 .help("Export a vector report of the screen with settings, measurements and cursors")
 
+                Toggle(isOn: Binding(get: { model.sharing != nil },
+                                     set: { $0 ? model.startSharing() : model.stopSharing() })) {
+                    Label("Share", systemImage: "iphone.radiowaves.left.and.right")
+                }
+                .disabled(model.source.isRemote)
+                .help("Share the scope on the network, for OwonScope on iPhone and iPad")
+
                 Button { showInspector.toggle() } label: { Label("Inspector", systemImage: "sidebar.trailing") }
                     .help("Show or hide the controls")
             }
@@ -125,9 +133,16 @@ struct ConnectionStatus: View {
     }
 
     private var text: String {
+        let base = connectionText
+        guard model.sharing != nil else { return base }
+        let n = model.sharingClients
+        return base + "  ·  Sharing" + (n > 0 ? " with \(n) device\(n == 1 ? "" : "s")" : "")
+    }
+
+    private var connectionText: String {
         switch model.connection {
         case .connected(let i):
-            i.isSimulated ? "Demo signals" : "\(i.model)  ·  \(i.serial)  ·  HW \(i.hardwareVersion)"
+            i.isSimulated ? "Demo signals" : "\(i.model)  ·  \(i.serial)  ·  HW \(i.hardwareVersion)" + (i.host.map { model.sharing == nil ? "  ·  on \($0)" : "" } ?? "")
         case .searching: "No scope connected"
         case .connecting: "Connecting…"
         case .loadingFirmware(let p): "Loading FPGA \(Int(p * 100)) %"
@@ -135,3 +150,4 @@ struct ConnectionStatus: View {
         }
     }
 }
+#endif

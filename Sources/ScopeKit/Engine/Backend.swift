@@ -1,11 +1,22 @@
 import Foundation
 
-public struct DeviceInfo: Sendable, Equatable {
+public struct DeviceInfo: Sendable, Equatable, Codable {
     public var model: String
     public var serial: String
     public var hardwareVersion: String
     public var fpgaVersion: Int
     public var isSimulated: Bool
+    /// The computer sharing the scope, when it is reached over the network.
+    public var host: String?
+
+    public init(model: String, serial: String, hardwareVersion: String, fpgaVersion: Int, isSimulated: Bool, host: String? = nil) {
+        self.model = model
+        self.serial = serial
+        self.hardwareVersion = hardwareVersion
+        self.fpgaVersion = fpgaVersion
+        self.isSimulated = isSimulated
+        self.host = host
+    }
 }
 
 /// A source of acquisitions: the real scope or the simulator.
@@ -20,7 +31,14 @@ public protocol AcquisitionBackend: AnyObject {
     func forceTrigger() throws
     /// Called periodically while idle to keep the USB link alive.
     func keepAlive() throws
+    /// Runs autoset itself and returns the result, or nil to let the engine run it
+    /// (the remote backend hands autoset to the computer that has the scope).
+    func autoset(from settings: ScopeSettings) throws -> ScopeSettings?
     func close()
+}
+
+public extension AcquisitionBackend {
+    func autoset(from settings: ScopeSettings) throws -> ScopeSettings? { nil }
 }
 
 /// Real hardware backend.

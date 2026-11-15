@@ -1,8 +1,10 @@
+#if os(macOS)
 import AppKit
+#endif
 import ScopeKit
 import UniformTypeIdentifiers
 
-/// Save panel and clipboard front end for the vector report.
+/// Report files, plus the Mac's save panel and clipboard front end for the vector report.
 @MainActor
 enum ReportExporter {
     private static let formatKey = "export.format", themeKey = "export.theme", statsKey = "export.statistics"
@@ -16,7 +18,7 @@ enum ReportExporter {
         return o
     }
 
-    private static func remember(_ o: ExportOptions) {
+    static func remember(_ o: ExportOptions) {
         let d = UserDefaults.standard
         d.set(o.format.rawValue, forKey: formatKey)
         d.set(o.theme.name, forKey: themeKey)
@@ -41,6 +43,13 @@ enum ReportExporter {
         try d.write(to: url, options: .atomic)
     }
 
+    /// Suggested file name, without extension.
+    static var suggestedName: String {
+        let stamp = ReportBuilder.timestamp(Date()).replacingOccurrences(of: ":", with: "-").replacingOccurrences(of: " ", with: " at ")
+        return "Scope \(stamp)"
+    }
+
+    #if os(macOS)
     /// Save panel with Format / Theme / Statistics options.
     static func exportInteractively(_ model: ScopeModel) {
         var options = savedOptions
@@ -126,4 +135,5 @@ enum ReportExporter {
             onChange(options)
         }
     }
+    #endif
 }

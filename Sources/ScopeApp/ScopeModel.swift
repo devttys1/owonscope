@@ -1,6 +1,8 @@
-import AppKit
 import Foundation
 import Observation
+#if os(macOS)
+import AppKit
+#endif
 import ScopeKit
 import UniformTypeIdentifiers
 
@@ -14,10 +16,18 @@ enum Persistence: String, CaseIterable, Codable {
 enum SourceChoice: Hashable, Codable {
     case hardware
     case demo(SimulatorScenario)
+    /// A scope shared over the network by another computer.
+    case remote(RemoteTarget)
 
     var engineSource: ScopeEngine.Source {
-        switch self { case .hardware: .hardware; case .demo(let s): .simulator(s) }
+        switch self {
+        case .hardware: .hardware
+        case .demo(let s): .simulator(s)
+        case .remote(let t): .remote(t)
+        }
     }
+
+    var isRemote: Bool { if case .remote = self { true } else { false } }
 }
 
 enum CursorMode: String, CaseIterable, Codable {
@@ -103,6 +113,19 @@ struct ReferenceWaveform {
     var saved = Date()
 }
 
+/// One received acquisition, as handed to `ScopeModel.frames()` listeners.
+struct Frame: @unchecked Sendable {
+    /// After averaging / envelope (what is displayed and measured).
+    var acquisition: Acquisition
+    /// As captured (what the decoders see).
+    var raw: Acquisition
+    var analysis: Analysis
+    /// Taken with the model's settings at the time it arrived.
+    var matchesSettings: Bool
+    /// 1 for the first capture with the current settings, 2 for the next... (0 if it doesn't match).
+    var matchingIndex: Int
+}
+
 /// Result of the per-acquisition analysis done off the main thread.
 struct Analysis: @unchecked Sendable {
     /// Acquisition after averaging / envelope.
@@ -123,7 +146,16 @@ final class ScopeModel {
     var display: DisplayPrefs { didSet { displayChanged(oldValue) } }
     var processing: ProcessingSettings { didSet { processingChanged(oldValue) } }
     var decoders: [DecoderInstance] { didSet { save(decoders, "decoders"); analysisConfig.update(decoders: decoders) } }
-    var source: SourceChoice { didSet { save(source, "source"); engine.setSource(source.engineSource) } }
+    var source: SourceChoice {
+        didSet {
+            save(source, "source")
+            if case .remote(let t) = source { RecentRemotes.add(t) }
+            #if os(macOS)
+            if sharing != nil { stopSharing() }
+            #endif
+            engine.setSource(source.engineSource)
+        }
+    }
 
     private(set) var running = true
     private(set) var connection: ConnectionState = .searching
@@ -143,8 +175,18 @@ final class ScopeModel {
         get { selectedTrace.channel ?? 0 }
         set { selectedTrace = Trace(rawValue: newValue) ?? .ch1 }
     }
+    /// Touch UI: the scope chooser sheet is showing.
+    var showSourcePicker = false
     /// Bumped to clear the persistence buffer.
     private(set) var displayGeneration = 0
+    /// Acquisitions received since launch.
+    private(set) var frameCount = 0
+    /// Acquisitions received since the settings last changed that were taken with the
+    /// current settings (the first of them may hold samples from before the change).
+    private(set) var matchingFrames = 0
+    /// Settings updates that came from the engine (autoset, other clients of a shared scope).
+    private(set) var engineSettingsUpdates = 0
+    @ObservationIgnored private var frameListeners: [UUID: AsyncStream<Frame>.Continuation] = [:]
 
     let engine: ScopeEngine
     private let analysisConfig = AnalysisConfig()
@@ -154,12 +196,31 @@ final class ScopeModel {
     private var frameTimes: [Date] = []
 
     init() {
+        // UI tests: -OwonScopeReset starts from defaults; -OwonScopeSource demo|host[:port]
+        // picks the signal source.
+        let args = ProcessInfo.processInfo.arguments
+        if args.contains("-OwonScopeReset") {
+            for k in ["settings", "display", "processing", "decoders", "source", "mobile.controlTab", "mobile.showControls", "mobile.showResults"] { UserDefaults.standard.removeObject(forKey: k) }
+        }
+        if let i = args.firstIndex(of: "-OwonScopeSource"), i + 1 < args.count {
+            let v = args[i + 1]
+            let choice: SourceChoice
+            if v == "demo" {
+                choice = .demo(.reference)
+            } else {
+                let parts = v.split(separator: ":")
+                let host = String(parts[0])
+                choice = .remote(RemoteTarget(name: host, host: host, port: parts.count > 1 ? UInt16(parts[1]) : nil))
+            }
+            if let d = try? JSONEncoder().encode(choice) { UserDefaults.standard.set(d, forKey: "source") }
+        }
         let s = Self.load(ScopeSettings.self, "settings") ?? ScopeSettings()
         settings = s
         display = Self.load(DisplayPrefs.self, "display") ?? DisplayPrefs()
         processing = Self.load(ProcessingSettings.self, "processing") ?? ProcessingSettings()
         decoders = Self.load([DecoderInstance].self, "decoders") ?? []
-        let src = Self.load(SourceChoice.self, "source") ?? .hardware
+        var src = Self.load(SourceChoice.self, "source") ?? (ScopeTransport.isAvailable ? .hardware : .demo(.reference))
+        if src == .hardware && !ScopeTransport.isAvailable { src = .demo(.reference) }
         source = src
         engine = ScopeEngine(settings: s, source: src.engineSource)
         analysisConfig.update(display: display)
@@ -188,6 +249,11 @@ final class ScopeModel {
         rawAcquisition = acq
         acquisition = a.processed ?? acq
         analysis = a
+        frameCount += 1
+        if Self.sameCapture(acq.settings, settings) { matchingFrames += 1 }
+        let frame = Frame(acquisition: a.processed ?? acq, raw: acq, analysis: a,
+                          matchesSettings: Self.sameCapture(acq.settings, settings), matchingIndex: matchingFrames)
+        for c in frameListeners.values { c.yield(frame) }
         for ch in 0..<2 {
             if let m = a.measurements[ch] { statistics.add(source: Trace(rawValue: ch)!.name, m) }
         }
@@ -214,6 +280,7 @@ final class ScopeModel {
             applyingEngineSettings = true
             settings = s
             applyingEngineSettings = false
+            engineSettingsUpdates += 1
         case .log(let m): appendLog(m)
         case .acquisition: break
         }
@@ -230,6 +297,7 @@ final class ScopeModel {
         save(settings, "settings")
         if !applyingEngineSettings { engine.update(settings) }
         if old != settings { statistics.reset() }
+        if !Self.sameCapture(old, settings) { matchingFrames = 0 }
         // geometry change => old persistence no longer lines up
         if old.timebaseIndex != settings.timebaseIndex || old.channels != settings.channels || old.triggerPosition != settings.triggerPosition {
             displayGeneration += 1
@@ -256,6 +324,30 @@ final class ScopeModel {
     private func updateGate() {
         let start = settings.screenStart
         analysisConfig.update(screen: (start, start + settings.timebase.window), cursors: (cursors.t1, cursors.t2))
+    }
+
+    /// Whether captures taken with `a` and `b` are alike (the sweep mode doesn't change the samples).
+    static func sameCapture(_ a: ScopeSettings, _ b: ScopeSettings) -> Bool {
+        var a = a, b = b
+        a.trigger.sweep = .auto
+        b.trigger.sweep = .auto
+        return a == b
+    }
+
+    /// Every displayed acquisition (after averaging) from now on, for at most `timeout`
+    /// seconds. Call the returned `end` when done; only the newest few frames are buffered.
+    func frames(timeout: Double) -> (stream: AsyncStream<Frame>, end: () -> Void) {
+        let id = UUID()
+        let (stream, c) = AsyncStream<Frame>.makeStream(bufferingPolicy: .bufferingNewest(4))
+        frameListeners[id] = c
+        c.onTermination = { [weak self] _ in
+            DispatchQueue.main.async { MainActor.assumeIsolated { _ = self?.frameListeners.removeValue(forKey: id) } }
+        }
+        let timer = Task { @MainActor in
+            try? await Task.sleep(for: .seconds(timeout))
+            c.finish()
+        }
+        return (stream, { timer.cancel(); c.finish() })
     }
 
     // MARK: Actions
@@ -399,6 +491,7 @@ final class ScopeModel {
 
     // MARK: Files
 
+    #if os(macOS)
     func chooseFirmwareFolder() {
         let panel = NSOpenPanel()
         panel.canChooseDirectories = true
@@ -416,13 +509,59 @@ final class ScopeModel {
     }
 
     func exportCSV() {
-        guard let acq = acquisition else { return }
+        guard let out = csvText() else { return }
         let panel = NSSavePanel()
         panel.allowedContentTypes = [.commaSeparatedText]
-        panel.nameFieldStringValue = "waveform-\(Int(Date().timeIntervalSince1970)).csv"
+        panel.nameFieldStringValue = csvFileName
         guard panel.runModal() == .OK, let url = panel.url else { return }
+        do { try out.write(to: url, atomically: true, encoding: .utf8) } catch { appendLog("Export failed: \(error.localizedDescription)") }
+    }
+
+    // MARK: Sharing on the network
+
+    /// The server sharing this Mac's scope, while sharing is on.
+    private(set) var sharing: ScopeServer?
+    private(set) var sharingClients = 0
+
+    /// Shares the scope (or the demo signal) with OwonScope on an iPhone, iPad or another
+    /// Mac. The scope moves to a server in this process and this window becomes one of its
+    /// clients, so every screen shows the same settings.
+    func startSharing() {
+        guard sharing == nil, !source.isRemote else { return }
+        let server = ScopeServer(source: source.engineSource, settings: settings)
+        server.onLog = { [weak self] m in DispatchQueue.main.async { self?.appendLog("Sharing: \(m)") } }
+        server.onClientsChanged = { [weak self] n in DispatchQueue.main.async { self?.sharingClients = max(0, n - 1) } }
+        // Release the scope before the server opens it.
+        engine.setSource(.simulator(.reference))
+        do {
+            try server.start()
+        } catch {
+            appendLog("Sharing failed: \(error.localizedDescription)")
+            engine.setSource(source.engineSource)
+            return
+        }
+        sharing = server
+        engine.setSource(.remote(RemoteTarget(name: "This Mac", host: "127.0.0.1", port: server.port)))
+    }
+
+    func stopSharing() {
+        guard let server = sharing else { return }
+        sharing = nil
+        sharingClients = 0
+        server.stop()
+        engine.setSource(source.engineSource)
+        appendLog("Stopped sharing")
+    }
+    #endif
+
+    var csvFileName: String { "waveform-\(Int(Date().timeIntervalSince1970)).csv" }
+
+    /// The displayed waveforms (and math) as CSV.
+    func csvText() -> String? {
+        guard let acq = acquisition else { return nil }
         var out = "time_s"
         let chans = acq.channels.compactMap { $0 }
+        guard !chans.isEmpty else { return nil }
         for w in chans { out += ",CH\(w.channel + 1)_\(w.unit.symbol)" }
         let math = analysis.math
         if let m = math { out += ",MATH_\(m.unit)" }
@@ -434,7 +573,7 @@ final class ScopeModel {
             if let m = math { out += i < m.count ? String(format: ",%.6g", m.values[i]) : "," }
             out += "\n"
         }
-        do { try out.write(to: url, atomically: true, encoding: .utf8) } catch { appendLog("Export failed: \(error.localizedDescription)") }
+        return out
     }
 
     func copyDecodedText() {
@@ -444,8 +583,7 @@ final class ScopeModel {
             lines.append("# \(d.kind.name): \(r.summary)")
             for e in r.events { lines.append(String(format: "%.9f\t%@", e.start, e.label)) }
         }
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(lines.joined(separator: "\n"), forType: .string)
+        Clipboard.copy(lines.joined(separator: "\n"))
     }
 
     // MARK: Persistence
@@ -457,6 +595,24 @@ final class ScopeModel {
     private static func load<T: Decodable>(_ type: T.Type, _ key: String) -> T? {
         guard let data = UserDefaults.standard.data(forKey: key) else { return nil }
         return try? JSONDecoder().decode(type, from: data)
+    }
+}
+
+/// Remote scopes used before, newest first (for hosts typed in by hand, which Bonjour
+/// won't list).
+enum RecentRemotes {
+    private static let key = "recentRemotes"
+
+    static var all: [RemoteTarget] {
+        guard let d = UserDefaults.standard.data(forKey: key),
+              let list = try? JSONDecoder().decode([RemoteTarget].self, from: d) else { return [] }
+        return list
+    }
+
+    static func add(_ t: RemoteTarget) {
+        var list = all.filter { $0 != t }
+        list.insert(t, at: 0)
+        if let d = try? JSONEncoder().encode(Array(list.prefix(6))) { UserDefaults.standard.set(d, forKey: key) }
     }
 }
 

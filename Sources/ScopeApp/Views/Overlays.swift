@@ -152,6 +152,7 @@ struct CursorsOverlay: View {
                 .foregroundStyle(.black)
                 .frame(width: 18, height: 16)
                 .background(RoundedRectangle(cornerRadius: 3).fill(Color.white.opacity(0.85)))
+                .contentShape(Rectangle().inset(by: Platform.isTouch ? -14 : 0))
                 .offset(y: 22)
                 .gesture(DragGesture(minimumDistance: 0, coordinateSpace: .named("cursors")).onChanged { set($0.location.x) })
         }
@@ -170,7 +171,8 @@ struct CursorsOverlay: View {
                 .foregroundStyle(.black)
                 .frame(width: 22, height: 16)
                 .background(RoundedRectangle(cornerRadius: 3).fill(color.opacity(0.9)))
-                .padding(.trailing, 34)
+                .contentShape(Rectangle().inset(by: Platform.isTouch ? -14 : 0))
+                .padding(.trailing, Platform.isTouch ? 48 : 34)
                 .gesture(DragGesture(minimumDistance: 0, coordinateSpace: .named("cursors")).onChanged { set($0.location.y) })
                 .allowsHitTesting(draggable)
         }
@@ -199,7 +201,7 @@ struct CursorsOverlay: View {
                     .allowsHitTesting(false)
             }
             .contentShape(RoundedRectangle(cornerRadius: 8))
-            .onHover { inside in if inside { NSCursor.openHand.push() } else { NSCursor.pop() } }
+            .openHandCursor()
             .gesture(DragGesture(minimumDistance: 1, coordinateSpace: .named("cursors"))
                 .updating($readoutDrag) { g, state, _ in state = g.translation }
                 .onEnded { g in
@@ -207,7 +209,7 @@ struct CursorsOverlay: View {
                     model.display.cursorReadout = CGPoint(x: p.x / max(1, map.size.width), y: p.y / max(1, map.size.height))
                 })
             .onTapGesture(count: 2) { model.display.cursorReadout = nil }
-            .help("Drag to move · double-click to reset position")
+            .help(Platform.isTouch ? "Drag to move · double-tap to reset position" : "Drag to move · double-click to reset position")
             .position(readoutCentre(adding: readoutDrag))
     }
 

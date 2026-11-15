@@ -143,6 +143,7 @@ enum TraceGeometry {
     }
 }
 
+#if os(macOS)
 /// The Metal trace layer.
 struct TraceLayer: NSViewRepresentable {
     var scene: TraceScene
@@ -183,6 +184,8 @@ struct TraceLayer: NSViewRepresentable {
     }
 }
 
+#endif
+
 struct ScopeDisplay: View {
     @Bindable var model: ScopeModel
     @State private var scrollAccum: CGFloat = 0
@@ -196,12 +199,22 @@ struct ScopeDisplay: View {
             let map = ScreenMapping(size: geo.size, settings: model.settings)
             let xy = model.display.format == .xy
             ZStack(alignment: .topLeading) {
+                #if os(macOS)
                 TraceLayer(scene: scene(width: geo.size.width),
                            onScroll: { handleScroll($0) },
                            onMagnify: { handleMagnify($0) },
                            onDrag: { t, _, _ in handleDrag(t, size: geo.size) },
                            onDragEnded: { dragOrigin = nil },
                            onClick: { selectTrace(at: $0, map: map) })
+                #else
+                TouchTraceLayer(scene: scene(width: geo.size.width),
+                                onPinch: { handlePinch($0) },
+                                onPan: { t in handleDrag(t, size: geo.size) },
+                                onPanEnded: { dragOrigin = nil },
+                                onTap: { selectTrace(at: $0, map: map) },
+                                onDoubleTap: { model.toggleRun() })
+                    .accessibilityIdentifier("scope-screen")
+                #endif
 
                 GraticuleView(map: map).allowsHitTesting(false)
 
@@ -220,7 +233,7 @@ struct ScopeDisplay: View {
                     MarkersOverlay(model: model, map: map, levelDragging: $levelDragging)
                 }
 
-                HUDOverlay(model: model)
+                HUDOverlay(model: model, compact: geo.size.width < 560)
 
                 ConnectionBanner(model: model)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -264,6 +277,7 @@ struct ScopeDisplay: View {
         if let b = best { model.selectTrace(b.0) }
     }
 
+    #if os(macOS)
     private func handleScroll(_ e: NSEvent) {
         let mods = e.modifierFlags
         let precise = e.hasPreciseScrollingDeltas
@@ -290,6 +304,8 @@ struct ScopeDisplay: View {
         }
     }
 
+    #endif
+
     private func handleMagnify(_ m: CGFloat) {
         magnifyAccum += m
         if abs(magnifyAccum) > 0.22 {
@@ -297,6 +313,29 @@ struct ScopeDisplay: View {
             magnifyAccum = 0
         }
     }
+
+    #if os(iOS)
+    @State private var pinchAccum: CGSize = .zero
+
+    /// Two-finger pinch: spread across the screen changes the timebase, spread up and down
+    /// the selected trace's scale. One step per ~30% of zoom.
+    private func handlePinch(_ p: PinchStep) {
+        switch p {
+        case .began: pinchAccum = .zero
+        case .changed(let scale):
+            pinchAccum.width += log(scale.width)
+            pinchAccum.height += log(scale.height)
+            let k: CGFloat = 0.28
+            if abs(pinchAccum.width) > k && abs(pinchAccum.width) >= abs(pinchAccum.height) {
+                model.stepTimebase(pinchAccum.width > 0 ? -1 : 1)
+                pinchAccum = .zero
+            } else if abs(pinchAccum.height) > k {
+                model.stepSelectedScale(pinchAccum.height > 0 ? -1 : 1)
+                pinchAccum = .zero
+            }
+        }
+    }
+    #endif
 
     /// Grab-and-move: horizontal drag pans the trigger point, vertical moves the selected trace.
     private func handleDrag(_ translation: CGPoint, size: CGSize) {
@@ -374,6 +413,7 @@ struct MarkersOverlay: View {
                                 model.setOffset(of: trace, (map.divs(g.location.y) * 25).rounded() / 25)
                             })
                         .help("\(trace.name) zero — drag to move, click to select")
+                        .accessibilityIdentifier("marker-\(trace.name)")
                         .position(x: 13, y: min(max(y, 9), map.size.height - 9))
                 }
             }
@@ -390,6 +430,7 @@ struct MarkersOverlay: View {
                         }
                         .onEnded { _ in levelDragging = false })
                     .help("Trigger level — drag to adjust")
+                    .accessibilityIdentifier("marker-trigger-level")
                     .position(x: map.size.width - 13, y: min(max(y, 9), map.size.height - 9))
             }
 
@@ -426,7 +467,7 @@ struct MarkerTag: View {
                 .offset(x: pointing == .right ? -2 : 2)
         }
         .frame(width: 24, height: 16)
-        .contentShape(Rectangle().inset(by: -6))
+        .contentShape(Rectangle().inset(by: Platform.isTouch ? -14 : -6))
     }
 }
 
@@ -457,13 +498,15 @@ struct TriggerPositionTag: View {
         }
         .fill(Theme.trigger)
         .frame(width: 14, height: 10)
-        .contentShape(Rectangle().inset(by: -6))
+        .contentShape(Rectangle().inset(by: Platform.isTouch ? -14 : -6))
     }
 }
 
 /// Status readouts drawn over the screen. The trace labels are clickable.
 struct HUDOverlay: View {
     var model: ScopeModel
+    /// Narrow screen (iPhone portrait): shorter labels, fewer pills.
+    var compact = false
 
     var body: some View {
         let s = model.settings
@@ -472,8 +515,8 @@ struct HUDOverlay: View {
             HStack(spacing: 6) {
                 Pill(text: state.rawValue, color: Theme.stateColor(state), filled: true)
                 Pill(text: s.timebase.label, color: .white)
-                Pill(text: Format.si(s.timebase.sampleRate, unit: "Sa/s"), color: .gray)
-                if s.timebase.isZoomed { Pill(text: "sin(x)/x", color: .gray) }
+                if !compact { Pill(text: Format.si(s.timebase.sampleRate, unit: "Sa/s"), color: .gray) }
+                if s.timebase.isZoomed && !compact { Pill(text: "sin(x)/x", color: .gray) }
                 if s.peakDetect { Pill(text: "Peak detect", color: .gray) }
                 if let acc = accumulation { Pill(text: acc, color: .white) }
                 if model.display.format == .xy { Pill(text: "XY", color: Theme.xy) }
@@ -482,10 +525,12 @@ struct HUDOverlay: View {
                          color: Theme.trigger)
                 }
                 Spacer()
-                if model.display.persistence != .off { Pill(text: "Persist \(model.display.persistence.rawValue)", color: .gray) }
-                Text(String(format: "%.0f fps", model.framesPerSecond))
-                    .font(.system(size: 10, design: .monospaced))
-                    .foregroundStyle(.white.opacity(0.45))
+                if model.display.persistence != .off && !compact { Pill(text: "Persist \(model.display.persistence.rawValue)", color: .gray) }
+                if !compact {
+                    Text(String(format: "%.0f fps", model.framesPerSecond))
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundStyle(.white.opacity(0.45))
+                }
             }
             .padding(.leading, 28)
             .padding(.trailing, 30)
@@ -504,7 +549,8 @@ struct HUDOverlay: View {
                 }
                 Spacer()
                 let t = s.trigger
-                Pill(text: "\(t.source.rawValue) \(t.slope == .rising ? "↑" : "↓") \(triggerLevel)  \(t.sweep.rawValue)",
+                Pill(text: compact ? "\(t.source.rawValue) \(t.slope == .rising ? "↑" : "↓") \(triggerLevel)"
+                                   : "\(t.source.rawValue) \(t.slope == .rising ? "↑" : "↓") \(triggerLevel)  \(t.sweep.rawValue)",
                      color: Theme.triggerColor(t.source))
                     .allowsHitTesting(false)
             }
@@ -532,10 +578,12 @@ struct HUDOverlay: View {
         case .math:
             let m = model.processing.math
             let unit = model.analysis.math?.unit ?? ""
+            if compact { return "M \(Format.si(m.unitsPerDivision, unit: unit))" }
             return "MATH \(m.label)  \(Format.si(m.unitsPerDivision, unit: unit))/div"
         default:
             let c = model.settings.channels[trace.rawValue]
             let clipped = model.acquisition?.channel(trace.rawValue)?.clipped ?? false
+            if compact { return "\(trace.rawValue + 1)  \(c.format(c.unitsPerDivision))\(clipped ? " ⚠︎" : "")" }
             return "CH\(trace.rawValue + 1)  \(c.format(c.unitsPerDivision))/div  \(c.coupling.rawValue)  \(c.probeLabel)\(clipped ? "  ⚠︎ clip" : "")"
         }
     }
@@ -552,13 +600,30 @@ struct ConnectionBanner: View {
         case .searching:
             card {
                 ProgressView().controlSize(.small)
-                Text("Looking for an OWON VDS1022…").font(.headline)
-                Text("Connect the scope over USB, or explore with a simulated signal.")
-                    .font(.callout).foregroundStyle(.secondary)
-                Button("Use Demo Signals") { model.source = .demo(.reference) }
+                if case .remote(let t) = model.source {
+                    Text("“\(t.name)” has no scope attached").font(.headline)
+                    Text("Plug the VDS1022 into that computer. OwonScope picks it up as soon as it appears.")
+                        .font(.callout).foregroundStyle(.secondary).multilineTextAlignment(.center).frame(maxWidth: 380)
+                } else {
+                    Text("Looking for an OWON VDS1022…").font(.headline)
+                    Text("Connect the scope over USB, or explore with a simulated signal.")
+                        .font(.callout).foregroundStyle(.secondary)
+                }
+                HStack {
+                    if Platform.isTouch { Button("Choose Scope…") { model.showSourcePicker = true } }
+                    Button("Use Demo Signals") { model.source = .demo(.reference) }
+                }
             }
         case .connecting:
-            card { ProgressView().controlSize(.small); Text("Connecting…").font(.headline) }
+            card {
+                ProgressView().controlSize(.small)
+                if case .remote(let t) = model.source {
+                    Text("Connecting to “\(t.name)”…").font(.headline)
+                    if Platform.isTouch { Button("Choose Scope…") { model.showSourcePicker = true } }
+                } else {
+                    Text("Connecting…").font(.headline)
+                }
+            }
         case .loadingFirmware(let p):
             card {
                 Text("Loading FPGA firmware").font(.headline)
@@ -570,10 +635,13 @@ struct ConnectionBanner: View {
                 Image(systemName: "exclamationmark.triangle.fill").font(.title2).foregroundStyle(.orange)
                 Text(msg).font(.callout).multilineTextAlignment(.center).frame(maxWidth: 380)
                 HStack {
+                    #if os(macOS)
                     if msg.contains("firmware") {
                         Button("Choose Firmware Folder…") { model.chooseFirmwareFolder() }
                     }
+                    #endif
                     Button("Retry") { model.reconnect() }
+                    if Platform.isTouch { Button("Choose Scope…") { model.showSourcePicker = true } }
                     Button("Use Demo") { model.source = .demo(.reference) }
                 }
             }
@@ -582,6 +650,7 @@ struct ConnectionBanner: View {
 
     private func card<C: View>(@ViewBuilder _ content: () -> C) -> some View {
         VStack(spacing: 10) { content() }
+            .buttonStyle(.bordered)
             .padding(22)
             .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
             .shadow(radius: 20)

@@ -40,12 +40,15 @@ struct ValueStepper: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            Text(label).foregroundStyle(.secondary).frame(width: 52, alignment: .leading)
+            Text(label).foregroundStyle(.secondary).frame(width: InspectorMetrics.labelWidth, alignment: .leading)
             Button(action: minus) { Image(systemName: "minus") }.buttonStyle(StepButtonStyle())
+                .accessibilityLabel("\(label) down")
             Text(value)
-                .font(.system(size: 13, weight: .semibold, design: .monospaced))
+                .font(.system(size: Platform.isTouch ? 15 : 13, weight: .semibold, design: .monospaced))
                 .frame(maxWidth: .infinity)
+                .accessibilityIdentifier("\(label) value")
             Button(action: plus) { Image(systemName: "plus") }.buttonStyle(StepButtonStyle())
+                .accessibilityLabel("\(label) up")
         }
     }
 }
@@ -53,11 +56,15 @@ struct ValueStepper: View {
 struct StepButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .font(.system(size: 11, weight: .bold))
-            .frame(width: 24, height: 22)
+            .font(.system(size: Platform.isTouch ? 15 : 11, weight: .bold))
+            .frame(width: Platform.isTouch ? 44 : 24, height: Platform.isTouch ? 36 : 22)
             .background(RoundedRectangle(cornerRadius: 6).fill(Color.primary.opacity(configuration.isPressed ? 0.25 : 0.1)))
             .contentShape(Rectangle())
     }
+}
+
+enum InspectorMetrics {
+    static let labelWidth: CGFloat = Platform.isTouch ? 66 : 52
 }
 
 struct LabeledRow<Content: View>: View {
@@ -65,7 +72,7 @@ struct LabeledRow<Content: View>: View {
     @ViewBuilder var content: () -> Content
     var body: some View {
         HStack(spacing: 8) {
-            Text(label).foregroundStyle(.secondary).frame(width: 52, alignment: .leading)
+            Text(label).foregroundStyle(.secondary).frame(width: InspectorMetrics.labelWidth, alignment: .leading)
             content()
         }
     }
@@ -296,7 +303,7 @@ struct AcquisitionSection: View {
                     Picker("", selection: $model.processing.averages) {
                         ForEach(ProcessingSettings.averageCounts, id: \.self) { Text("\($0)").tag($0) }
                     }.labelsHidden()
-                    Toggle("Show raw", isOn: $model.display.showRawUnderAverage).toggleStyle(.checkbox)
+                    Toggle("Show raw", isOn: $model.display.showRawUnderAverage).checkboxToggle()
                 }
             case .envelope:
                 Text("Min/max of every triggered capture since the last reset.")
@@ -404,7 +411,7 @@ struct ReferenceSection: View {
                         Spacer()
                         Toggle("", isOn: Binding(get: { model.references[slot]?.visible ?? false },
                                                  set: { model.references[slot]?.visible = $0 }))
-                            .toggleStyle(.checkbox).labelsHidden().help("Show R\(slot + 1)")
+                            .checkboxToggle().labelsHidden().help("Show R\(slot + 1)")
                         Button { model.clearReference(slot: slot) } label: { Image(systemName: "trash") }
                             .buttonStyle(.borderless).help("Clear R\(slot + 1)")
                     } else {
@@ -459,15 +466,20 @@ struct DecoderSection: View {
                 Button("UART / RS-232") { model.addDecoder(.uart(UARTConfig())) }
                 Button("I²C") { model.addDecoder(.i2c(I2CConfig())) }
                 Button("SPI") { model.addDecoder(.spi(SPIConfig())) }
+                Divider()
+                Button("CAN") { model.addDecoder(.can(CANConfig())) }
+                Button("LIN") { model.addDecoder(.lin(LINConfig())) }
+                Button("USB 1.x (low / full speed)") { model.addDecoder(.usb(USBConfig())) }
+                Button("1-Wire") { model.addDecoder(.oneWire(OneWireConfig())) }
             } label: {
-                Image(systemName: "plus.circle.fill")
+                Image(systemName: "plus.circle.fill").font(.system(size: Platform.isTouch ? 24 : 13)).accessibilityLabel("Add decoder")
             }
-            .menuStyle(.borderlessButton)
+            .borderlessMenu()
             .menuIndicator(.hidden)
             .fixedSize()
         }) {
             if model.decoders.isEmpty {
-                Text("Add a decoder to turn CH1/CH2 into UART, I²C or SPI data.")
+                Text("Add a decoder to turn CH1/CH2 into UART, I²C, SPI, CAN, LIN, USB or 1-Wire data.")
                     .font(.system(size: 11)).foregroundStyle(.secondary)
             }
             ForEach(Array(model.decoders.enumerated()), id: \.element.id) { index, d in
@@ -509,6 +521,10 @@ struct DecoderEditor: View {
             case .uart: uartEditor
             case .i2c: i2cEditor
             case .spi: spiEditor
+            case .can: canEditor
+            case .lin: linEditor
+            case .usb: usbEditor
+            case .oneWire: oneWireEditor
             }
             if let r = model.analysis.decodes[decoder.id] {
                 Text(r.summary).font(.system(size: 11)).foregroundStyle(.secondary)
@@ -529,6 +545,22 @@ struct DecoderEditor: View {
     }
     private var spi: Binding<SPIConfig> {
         binding({ if case .spi(let c) = $0 { c } else { nil } }, { .spi($0) }, default: SPIConfig())
+    }
+    private var can: Binding<CANConfig> {
+        binding({ if case .can(let c) = $0 { c } else { nil } }, { .can($0) }, default: CANConfig())
+    }
+    private var lin: Binding<LINConfig> {
+        binding({ if case .lin(let c) = $0 { c } else { nil } }, { .lin($0) }, default: LINConfig())
+    }
+    private var usb: Binding<USBConfig> {
+        binding({ if case .usb(let c) = $0 { c } else { nil } }, { .usb($0) }, default: USBConfig())
+    }
+    private var oneWire: Binding<OneWireConfig> {
+        binding({ if case .oneWire(let c) = $0 { c } else { nil } }, { .oneWire($0) }, default: OneWireConfig())
+    }
+
+    private static func rateLabel(_ r: Double) -> String {
+        r >= 1e6 ? String(format: "%gM", r / 1e6) : r >= 1e3 ? String(format: "%gk", (r / 10).rounded() / 100) : "\(Int(r))"
     }
 
     private func channelPicker(_ label: String, _ b: Binding<Int>) -> some View {
@@ -566,7 +598,7 @@ struct DecoderEditor: View {
         HStack {
             Toggle("Inverted (RS-232)", isOn: uart.invert)
             Toggle("MSB first", isOn: uart.msbFirst)
-        }.toggleStyle(.checkbox)
+        }.checkboxToggle()
     }
 
     @ViewBuilder private var i2cEditor: some View {
@@ -585,8 +617,63 @@ struct DecoderEditor: View {
         LabeledRow(label: "Word") {
             Picker("", selection: spi.bitsPerWord) { Text("8").tag(8); Text("16").tag(16) }
                 .pickerStyle(.segmented).labelsHidden().frame(width: 80)
-            Toggle("MSB first", isOn: spi.msbFirst).toggleStyle(.checkbox)
+            Toggle("MSB first", isOn: spi.msbFirst).checkboxToggle()
         }
         formatPicker(spi.format)
+    }
+
+    @ViewBuilder private var canEditor: some View {
+        channelPicker("Input", can.channel)
+        LabeledRow(label: "Signal") {
+            Picker("", selection: can.signal) { ForEach(CANConfig.Signal.allCases, id: \.self) { Text($0.rawValue).tag($0) } }
+                .labelsHidden()
+        }
+        LabeledRow(label: "Bit rate") {
+            Picker("", selection: can.bitrate) {
+                Text("Auto").tag(0.0)
+                ForEach(CANConfig.standardBitrates, id: \.self) { Text(Self.rateLabel($0) + "bit/s").tag($0) }
+            }.labelsHidden()
+        }
+        LabeledRow(label: "Sample pt") {
+            Picker("", selection: can.samplePoint) {
+                ForEach([0.5, 0.625, 0.75, 0.8, 0.875], id: \.self) { Text(String(format: "%g %%", $0 * 100)).tag($0) }
+            }.labelsHidden()
+        }
+        formatPicker(can.format)
+    }
+
+    @ViewBuilder private var linEditor: some View {
+        channelPicker("Input", lin.channel)
+        LabeledRow(label: "Baud") {
+            Picker("", selection: lin.baud) {
+                Text("From sync").tag(0.0)
+                ForEach(LINConfig.standardBauds, id: \.self) { Text("\(Int($0))").tag($0) }
+            }.labelsHidden()
+        }
+        LabeledRow(label: "Checksum") {
+            Picker("", selection: lin.checksum) { ForEach(LINConfig.Checksum.allCases, id: \.self) { Text($0.rawValue).tag($0) } }
+                .pickerStyle(.segmented).labelsHidden()
+        }
+        formatPicker(lin.format)
+        Toggle("Inverted", isOn: lin.invert).checkboxToggle()
+    }
+
+    @ViewBuilder private var usbEditor: some View {
+        channelPicker("D+", usb.dPlus)
+        channelPicker("D−", usb.dMinus)
+        LabeledRow(label: "Speed") {
+            Picker("", selection: usb.speed) { ForEach(USBConfig.Speed.allCases, id: \.self) { Text($0.rawValue).tag($0) } }
+                .pickerStyle(.segmented).labelsHidden()
+        }
+        formatPicker(usb.format)
+    }
+
+    @ViewBuilder private var oneWireEditor: some View {
+        channelPicker("Input", oneWire.channel)
+        LabeledRow(label: "Speed") {
+            Picker("", selection: oneWire.speed) { ForEach(OneWireConfig.Speed.allCases, id: \.self) { Text($0.rawValue).tag($0) } }
+                .pickerStyle(.segmented).labelsHidden()
+        }
+        formatPicker(oneWire.format)
     }
 }

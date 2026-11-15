@@ -1,11 +1,12 @@
 // swift-tools-version: 6.0
 import PackageDescription
 
+// The ScopeApp target holds the SwiftUI app; the OwonScopeMac executable starts it.
 let package = Package(
     name: "OwonScope",
     platforms: [.macOS("14.4")],
     products: [
-        .executable(name: "OwonScope", targets: ["OwonScope"]),
+        .executable(name: "OwonScopeMac", targets: ["OwonScope"]),
         .library(name: "ScopeKit", targets: ["ScopeKit"]),
     ],
     targets: [
@@ -19,9 +20,14 @@ let package = Package(
             dependencies: ["CLibUSB"],
             swiftSettings: [.swiftLanguageMode(.v5)]
         ),
+        .target(
+            name: "ScopeApp",
+            dependencies: ["ScopeKit"],
+            swiftSettings: [.swiftLanguageMode(.v5)]
+        ),
         .executableTarget(
             name: "OwonScope",
-            dependencies: ["ScopeKit"],
+            dependencies: ["ScopeApp"],
             swiftSettings: [.swiftLanguageMode(.v5)]
         ),
     ]

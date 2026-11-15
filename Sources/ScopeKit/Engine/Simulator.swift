@@ -5,6 +5,10 @@ public enum SimulatorScenario: String, CaseIterable, Sendable, Codable {
     case reference = "1 kHz reference + UART"
     case i2c = "I²C bus (SCL / SDA)"
     case spi = "SPI (SCK / MOSI)"
+    case can = "CAN bus (CAN_H / CAN_L)"
+    case lin = "LIN bus (bus / RX)"
+    case usb = "USB low speed (D+ / D−)"
+    case oneWire = "1-Wire (DS18B20)"
     case analog = "Sine + AM"
 }
 
@@ -26,6 +30,18 @@ public struct SignalModel: Sendable {
         case .spi:
             let spi = SPIPattern(rate: 1_000_000, bytes: Array("SPI!".utf8) + [0x00, 0xFF, 0xA5], gap: 2e-5)
             return SignalModel(ch1: { t in spi.sck(at: t) ? 3.3 : 0 }, ch2: { t in spi.mosi(at: t) ? 3.3 : 0 })
+        case .can:
+            let tl = BusPatterns.canScenario
+            return SignalModel(ch1: { t in tl.line(0, at: t) ? 2.5 : 3.5 }, ch2: { t in tl.line(0, at: t) ? 2.5 : 1.5 })
+        case .lin:
+            let tl = BusPatterns.linScenario
+            return SignalModel(ch1: { t in tl.line(0, at: t) ? 12 : 0.9 }, ch2: { t in tl.line(0, at: t) ? 3.3 : 0 })
+        case .usb:
+            let tl = BusPatterns.usbScenario
+            return SignalModel(ch1: { t in tl.line(0, at: t) ? 3.3 : 0 }, ch2: { t in tl.line(1, at: t) ? 3.3 : 0 })
+        case .oneWire:
+            let tl = BusPatterns.oneWireScenario
+            return SignalModel(ch1: { t in tl.line(0, at: t) ? 3.3 : 0 }, ch2: { _ in 0 })
         case .analog:
             return SignalModel(
                 ch1: { t in 1.5 * sin(2 * .pi * 10_000 * t) },

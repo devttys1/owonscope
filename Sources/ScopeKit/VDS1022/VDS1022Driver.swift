@@ -21,7 +21,7 @@ public struct RawChannelFrame: Sendable {
 public final class VDS1022Driver {
     public let flash: VDS1022Flash
     public private(set) var fpgaVersion: Int
-    private let usb: USBDevice
+    private let usb: BulkTransport
     private var buffer = [UInt8](repeating: 0, count: 6000)
     public var log: ((String) -> Void)?
     public private(set) var lastIO = Date()
@@ -29,7 +29,7 @@ public final class VDS1022Driver {
     /// Opens the first VDS1022 found. Throws `ScopeError.notFound` if absent.
     public init(log: ((String) -> Void)? = nil) throws {
         self.log = log
-        guard let dev = try USBDevice(vendorID: VDS1022.vendorID, productID: VDS1022.productID) else {
+        guard let dev = try ScopeTransport.open() else {
             throw ScopeError.notFound
         }
         usb = dev
@@ -48,7 +48,7 @@ public final class VDS1022Driver {
     }
 
     /// Identifies the machine and reads the flash (calibration, serial, version).
-    private static func handshake(_ usb: USBDevice) throws -> VDS1022Flash {
+    private static func handshake(_ usb: BulkTransport) throws -> VDS1022Flash {
         var buf = [UInt8](repeating: 0, count: 6000)
         func read(_ timeout: UInt32) throws -> Int {
             try buf.withUnsafeMutableBufferPointer { try usb.bulkRead(into: $0, timeout: timeout) }
@@ -81,7 +81,7 @@ public final class VDS1022Driver {
                 guard n == 5 else { throw ScopeError.protocolError("\(cmd) returned \(n) bytes") }
                 lastIO = Date()
                 return UInt32(buffer[1]) | UInt32(buffer[2]) << 8 | UInt32(buffer[3]) << 16 | UInt32(buffer[4]) << 24
-            } catch let e as USBError where !e.isDisconnected && failures < 2 {
+            } catch let e as TransportFailure where !e.isDisconnected && failures < 2 {
                 failures += 1
                 usleep(UInt32(10_000 * failures))
             }

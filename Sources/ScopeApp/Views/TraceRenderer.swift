@@ -1,4 +1,3 @@
-import AppKit
 import MetalKit
 import ScopeKit
 import simd
@@ -185,11 +184,20 @@ final class TraceRenderer: NSObject, MTKViewDelegate {
         super.init()
     }
 
+    /// Drawable pixels per point (2 or 3 on Retina screens).
+    private func pixelScale(_ view: MTKView) -> Float {
+        view.bounds.width > 0 ? Float(view.drawableSize.width / view.bounds.width) : 2
+    }
+
     func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {
         frameTex = nil
         accum = []
         geometryDirty = true
+        #if os(macOS)
         view.needsDisplay = true
+        #else
+        view.setNeedsDisplay()
+        #endif
     }
 
     private func ensureTextures(_ size: CGSize) {
@@ -233,7 +241,7 @@ final class TraceRenderer: NSObject, MTKViewDelegate {
                 for line in scene.lines where line.points.count >= 2 {
                     guard let buf = device.makeBuffer(bytes: line.points, length: line.points.count * MemoryLayout<SIMD2<Float>>.stride) else { continue }
                     var u = TraceUniforms(viewport: SIMD2(Float(size.width), Float(size.height)),
-                                          halfWidth: scene.halfWidth * Float(view.window?.backingScaleFactor ?? 2),
+                                          halfWidth: scene.halfWidth * pixelScale(view),
                                           color: line.color)
                     enc.setVertexBuffer(buf, offset: 0, index: 0)
                     enc.setVertexBytes(&u, length: MemoryLayout<TraceUniforms>.stride, index: 1)
@@ -312,6 +320,9 @@ final class TraceRenderer: NSObject, MTKViewDelegate {
     }
 }
 
+#if os(macOS)
+import AppKit
+
 /// MTKView that reports scroll, pinch and drag gestures.
 final class ScopeMTKView: MTKView {
     weak var renderer: TraceRenderer?
@@ -353,3 +364,4 @@ final class ScopeMTKView: MTKView {
         dragged = false
     }
 }
+#endif

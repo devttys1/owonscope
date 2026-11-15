@@ -139,9 +139,41 @@ public enum DecoderKind: Codable, Equatable, Sendable {
     case uart(UARTConfig)
     case i2c(I2CConfig)
     case spi(SPIConfig)
+    case can(CANConfig)
+    case lin(LINConfig)
+    case usb(USBConfig)
+    case oneWire(OneWireConfig)
 
     public var name: String {
-        switch self { case .uart: "UART"; case .i2c: "I²C"; case .spi: "SPI" }
+        switch self {
+        case .uart: "UART"; case .i2c: "I²C"; case .spi: "SPI"
+        case .can: "CAN"; case .lin: "LIN"; case .usb: "USB"; case .oneWire: "1-Wire"
+        }
+    }
+
+    /// Stable lower-case identifier (for the CLI, automation and MCP): "uart", "i2c", "spi",
+    /// "can", "lin", "usb", "onewire".
+    public var protocolID: String {
+        switch self {
+        case .uart: "uart"; case .i2c: "i2c"; case .spi: "spi"
+        case .can: "can"; case .lin: "lin"; case .usb: "usb"; case .oneWire: "onewire"
+        }
+    }
+
+    public static let allProtocolIDs = ["uart", "i2c", "spi", "can", "lin", "usb", "onewire"]
+
+    /// A decoder with default settings for a protocol id (see `protocolID`).
+    public static func defaults(for protocolID: String) -> DecoderKind? {
+        switch protocolID.lowercased().replacingOccurrences(of: "-", with: "").replacingOccurrences(of: "_", with: "") {
+        case "uart", "serial", "rs232": .uart(UARTConfig())
+        case "i2c", "iic", "twi": .i2c(I2CConfig())
+        case "spi": .spi(SPIConfig())
+        case "can", "canbus": .can(CANConfig())
+        case "lin", "linbus": .lin(LINConfig())
+        case "usb": .usb(USBConfig())
+        case "onewire", "1wire", "ow": .oneWire(OneWireConfig())
+        default: nil
+        }
     }
 
     public var channels: [Int] {
@@ -149,6 +181,40 @@ public enum DecoderKind: Codable, Equatable, Sendable {
         case .uart(let c): [c.channel]
         case .i2c(let c): [c.scl, c.sda]
         case .spi(let c): [c.sck, c.data]
+        case .can(let c): [c.channel]
+        case .lin(let c): [c.channel]
+        case .usb(let c): [c.dPlus, c.dMinus]
+        case .oneWire(let c): [c.channel]
+        }
+    }
+
+    /// The settings as display strings, keyed like the MCP tool arguments
+    /// (channels as "CH1"/"CH2", rates as numbers or "auto").
+    public var settingsSummary: [String: String] {
+        func ch(_ i: Int) -> String { "CH\(i + 1)" }
+        func th(_ t: Threshold) -> String { if case .volts(let v) = t { String(format: "%g", v) } else { "auto" } }
+        func rate(_ r: Double) -> String { r > 0 ? String(format: "%g", r) : "auto" }
+        switch self {
+        case .uart(let c):
+            return ["channel": ch(c.channel), "baud": rate(c.baud), "data_bits": "\(c.dataBits)", "parity": c.parity.rawValue,
+                    "stop_bits": String(format: "%g", c.stopBits), "invert": "\(c.invert)", "msb_first": "\(c.msbFirst)",
+                    "threshold": th(c.threshold), "format": c.format.rawValue]
+        case .i2c(let c):
+            return ["scl": ch(c.scl), "sda": ch(c.sda), "threshold": th(c.threshold), "format": c.format.rawValue]
+        case .spi(let c):
+            return ["sck": ch(c.sck), "data": ch(c.data), "mode": "\(c.mode)", "bits_per_word": "\(c.bitsPerWord)",
+                    "msb_first": "\(c.msbFirst)", "threshold": th(c.threshold), "format": c.format.rawValue]
+        case .can(let c):
+            return ["channel": ch(c.channel), "bitrate": rate(c.bitrate), "sample_point": String(format: "%g", c.samplePoint),
+                    "signal": c.signal.rawValue, "threshold": th(c.threshold), "format": c.format.rawValue]
+        case .lin(let c):
+            return ["channel": ch(c.channel), "baud": rate(c.baud), "checksum": c.checksum.rawValue, "invert": "\(c.invert)",
+                    "threshold": th(c.threshold), "format": c.format.rawValue]
+        case .usb(let c):
+            return ["d_plus": ch(c.dPlus), "d_minus": ch(c.dMinus), "speed": c.speed.rawValue,
+                    "threshold": th(c.threshold), "format": c.format.rawValue]
+        case .oneWire(let c):
+            return ["channel": ch(c.channel), "speed": c.speed.rawValue, "threshold": th(c.threshold), "format": c.format.rawValue]
         }
     }
 }
@@ -172,6 +238,10 @@ public enum ProtocolDecoding {
         case .uart(let c): return UARTDecoder.decode(c, acq, id: d.id)
         case .i2c(let c): return I2CDecoder.decode(c, acq, id: d.id)
         case .spi(let c): return SPIDecoder.decode(c, acq, id: d.id)
+        case .can(let c): return CANDecoder.decode(c, acq, id: d.id)
+        case .lin(let c): return LINDecoder.decode(c, acq, id: d.id)
+        case .usb(let c): return USBDecoder.decode(c, acq, id: d.id)
+        case .oneWire(let c): return OneWireDecoder.decode(c, acq, id: d.id)
         }
     }
 }
